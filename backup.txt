@@ -1,0 +1,280 @@
+import './style.css'
+import * as THREE from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { BlockSystem } from './BlockSystem.js'
+import { UserInterface } from './UserInterface.js'
+
+// Main application class
+class BlockBuilder {
+  constructor() {
+    // Scene setup
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0xffffff); // White background
+    
+    // Camera setup
+    this.camera = new THREE.PerspectiveCamera(
+      75, 
+      window.innerWidth / window.innerHeight, 
+      0.1, 
+      1000
+    );
+    this.camera.position.set(5, 5, 5);
+    this.camera.lookAt(0, 0, 0);
+    
+    // Renderer setup
+    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setClearColor(0xffffff); // White background
+    document.getElementById('app').appendChild(this.renderer.domElement);
+    
+    // Controls setup
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.update();
+    
+    // Add minimal lighting
+    this.setupLights();
+    
+    // Set up grid helper (minimal grid)
+    this.setupGrid();
+    
+    // Initialize raycaster and mouse
+    this.raycaster = new THREE.Raycaster();
+    this.mouse = new THREE.Vector2();
+    
+    // Add preview block for placement
+    this.createPreviewBlock();
+    
+    // Setup event listeners
+    this.setupEventListeners();
+    
+    // Handle window resizing
+    window.addEventListener('resize', this.onWindowResize.bind(this));
+    
+    // Start render loop
+    this.animate();
+  }
+  
+  // Set up scene lighting
+  setupLights() {
+    // Simple ambient light
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    this.scene.add(ambientLight);
+    
+    // Directional light for subtle shadows
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    directionalLight.position.set(1, 1, 1);
+    this.scene.add(directionalLight);
+  }
+  
+  // Setup invisible plane for raycasting (no visible grid)
+  setupGrid() {
+    // No visible grid helper
+    
+    // Ground plane for raycasting - completely invisible
+    const planeGeometry = new THREE.PlaneGeometry(20, 20);
+    const planeMaterial = new THREE.MeshBasicMaterial({ 
+      visible: false  // Make the plane completely invisible
+    });
+    this.plane = new THREE.Mesh(planeGeometry, planeMaterial);
+    this.plane.rotation.x = -Math.PI / 2; // Horizontal
+    this.plane.position.y = 0; // At grid level
+    this.scene.add(this.plane);
+    
+    // Blocks group and tracking
+    this.blocksGroup = new THREE.Group();
+    this.scene.add(this.blocksGroup);
+    this.occupiedPositions = new Set();
+    
+    // Colors for blocks
+    this.colors = [
+      0x000000, // Black
+      0x333333, // Dark gray
+      0x666666, // Medium gray
+      0x999999, // Light gray
+    ];
+  }
+  
+  // Set up mouse and touch event listeners
+  setupEventListeners() {
+    // Mouse move for highlighting blocks
+    document.addEventListener('mousemove', this.onMouseMove.bind(this));
+    
+    // Mouse click for placing/removing blocks
+    document.addEventListener('mousedown', this.onMouseDown.bind(this));
+    document.addEventListener('contextmenu', (event) => event.preventDefault());
+    
+    // Keyboard shortcuts
+    document.addEventListener('keydown', this.onKeyDown.bind(this));
+  }
+  
+  // Create a preview block to show where blocks will be placed
+  createPreviewBlock() {
+    const geometry = new THREE.BoxGeometry(1.01, 1.01, 1.01); // Slightly larger than the blocks
+    const material = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      opacity: 0.2,
+      transparent: true,
+      wireframe: true,
+      depthTest: false // Make sure it's visible through other objects
+    });
+    
+    this.previewBlock = new THREE.Mesh(geometry, material);
+    this.previewBlock.visible = false;
+    this.scene.add(this.previewBlock);
+  }
+  
+  // Helper function to get position key
+  getKey(pos) {
+    return `${Math.round(pos.x)},${Math.round(pos.y)},${Math.round(pos.z)}`;
+  }
+  
+  // Add block function
+  addBlock(pos, color) {
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshLambertMaterial({ color });
+    const block = new THREE.Mesh(geometry, material);
+    
+    // Set position to exact grid coordinates (whole numbers)
+    block.position.set(
+      Math.round(pos.x),
+      Math.round(pos.y),
+      Math.round(pos.z)
+    );
+    
+    this.blocksGroup.add(block);
+    this.occupiedPositions.add(this.getKey(block.position));
+    
+    // Log the position for debugging
+    console.log('Block added at:', block.position);
+  }
+  
+  // Remove block function
+  removeBlock(block) {
+    const key = this.getKey(block.position);
+    this.blocksGroup.remove(block);
+    this.occupiedPositions.delete(key);
+  }
+  
+  // Mouse move handler
+  onMouseMove(event) {
+    // Calculate mouse position in normalized device coordinates
+    this.mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    this.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    
+    // Update the preview for better user feedback
+    this.updatePreview();
+  }
+  
+  // Update the preview position
+  updatePreview() {
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    
+    // Check intersections with plane and blocks
+    const intersects = this.raycaster.intersectObjects([this.plane, ...this.blocksGroup.children]);
+    
+    if (intersects.length > 0) {
+      const intersect = intersects[0];
+      let previewPos;
+      
+      if (intersect.object === this.plane) {
+        // Preview on the ground plane
+        previewPos = new THREE.Vector3(
+          intersect.point.x,
+          0,
+          intersect.point.z
+        );
+      } else {
+        // Preview next to existing block
+        previewPos = intersect.object.position.clone();
+        previewPos.add(intersect.face.normal);
+      }
+      
+      // Round to grid
+      previewPos.x = Math.round(previewPos.x);
+      previewPos.y = Math.round(previewPos.y);
+      previewPos.z = Math.round(previewPos.z);
+      
+      // Position the preview block
+      this.previewBlock.position.copy(previewPos);
+      this.previewBlock.visible = true;
+    } else {
+      // Hide preview if no intersection
+      this.previewBlock.visible = false;
+    }
+  }
+  
+  // Mouse down handler
+  onMouseDown(event) {
+    event.preventDefault();
+    this.mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    this.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+
+    if (event.button === 0) { // Left click to place
+      // First check if we intersect with plane or existing blocks
+      const intersects = this.raycaster.intersectObjects([this.plane, ...this.blocksGroup.children]);
+      
+      if (intersects.length > 0) {
+        const intersect = intersects[0];
+        let newPos;
+        
+        if (intersect.object === this.plane) {
+          // Creating a block on the ground plane
+          newPos = new THREE.Vector3(
+            intersect.point.x,
+            0, // Force y=0 for the first layer
+            intersect.point.z
+          );
+        } else {
+          // Creating a block on an existing block
+          newPos = intersect.object.position.clone();
+          newPos.add(intersect.face.normal);
+        }
+        
+        const key = this.getKey(newPos);
+        if (!this.occupiedPositions.has(key)) {
+          const color = this.colors[Math.floor(Math.random() * this.colors.length)];
+          this.addBlock(newPos, color);
+        }
+      }
+    } else if (event.button === 2) { // Right click to remove
+      const intersects = this.raycaster.intersectObjects(this.blocksGroup.children);
+      if (intersects.length > 0) {
+        this.removeBlock(intersects[0].object);
+      }
+    }
+  }
+  
+  // Keyboard shortcut handler
+  onKeyDown(event) {
+    // Example: press 'R' to reset blocks
+    if (event.key === 'r' || event.key === 'R') {
+      // Remove all blocks
+      while (this.blocksGroup.children.length > 0) {
+        this.blocksGroup.remove(this.blocksGroup.children[0]);
+      }
+      this.occupiedPositions.clear();
+    }
+  }
+  
+  // Handle window resize
+  onWindowResize() {
+    this.camera.aspect = window.innerWidth / window.innerHeight;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+  
+  // Animation loop
+  animate() {
+    requestAnimationFrame(this.animate.bind(this));
+    
+    // Update controls
+    this.controls.update();
+    
+    // Render the scene
+    this.renderer.render(this.scene, this.camera);
+  }
+}
+
+// Initialize the application
+const app = new BlockBuilder()
